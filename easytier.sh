@@ -86,11 +86,16 @@ download_and_extract() {
             ;;
     esac
 
-    echo "正在下载 EasyTier (${arch_name}) 到 /tmp/easytier.zip..."
-    wget -O /tmp/easytier.zip "$download_url"
-    if [ $? -ne 0 ]; then
-        echo "错误: 下载EasyTier失败."
-        exit 1
+    # 检查本地是否存在 easytier.zip
+    if [ -f "/tmp/easytier.zip" ]; then
+        echo "检测到本地存在 /tmp/easytier.zip，直接使用本地文件..."
+    else
+        echo "未找到本地缓存文件，正在下载 EasyTier (${arch_name}) 到 /tmp/easytier.zip..."
+        wget -O /tmp/easytier.zip "$download_url"
+        if [ $? -ne 0 ]; then
+            echo "错误: 下载EasyTier失败."
+            exit 1
+        fi
     fi
 
     echo "正在解压文件到 /root/easytier/..."
@@ -98,7 +103,11 @@ download_and_extract() {
     unzip -o /tmp/easytier.zip -d /root/easytier/
     if [ $? -ne 0 ]; then
         echo "错误: 解压EasyTier文件失败."
-        rm -f /tmp/easytier.zip
+        # 如果是本地缓存文件有问题，删除它以便下次重新下载
+        if [ -f "/tmp/easytier.zip" ]; then
+            echo "删除损坏的本地缓存文件 /tmp/easytier.zip"
+            rm -f /tmp/easytier.zip
+        fi
         exit 1
     fi
 
@@ -115,10 +124,10 @@ download_and_extract() {
         echo "警告: 未找到预期的二级目录 /root/easytier/${extracted_dir_name}。请手动检查解压结果。"
     fi
 
-    rm -f /tmp/easytier.zip
+    # 注意：这里我们不删除 /tmp/easytier.zip，保留它作为缓存
     chmod +x /root/easytier/easytier-core
     chmod +x /root/easytier/easytier-cli
-    echo "EasyTier文件下载并解压完成."
+    echo "EasyTier文件处理完成."
 }
 
 # 安装流程
@@ -143,7 +152,7 @@ After=network.target syslog.target
 Wants=network.target
 [Service]
 Type=simple
-ExecStart=/root/easytier/easytier-core -w $USERNAME  --hostname $HOSTNAME 
+ExecStart=/root/easytier/easytier-core -w $USERNAME --hostname $HOSTNAME
 Restart=always
 RestartSec=5
 LimitNOFILE=1048576
@@ -152,32 +161,33 @@ Environment=TOKIO_CONSOLE=1
 WantedBy=multi-user.target"
 
     echo "$service_content" > /etc/systemd/system/easytier.service
-   # 5. 启动服务
+
+    # 5. 增加做为网关时的转发规则
+    export tun_IF=tun0 && export WAN_IF=eth0  #设置物理网卡和虚拟网卡的接口
+    #其中的 tun0 在不同的机器中不一样，你可以在路由器ssh环境中用 ip addr
+    iptables -I FORWARD -i $WAN_IF -j ACCEPT
+    iptables -I FORWARD -o $WAN_IF -j ACCEPT
+    iptables -t nat -I POSTROUTING -o $WAN_IF -j MASQUERADE
+    iptables -I FORWARD -i $tun_IF -j ACCEPT
+    iptables -I FORWARD -o $tun_IF -j ACCEPT
+    iptables -t nat -I POSTROUTING -o $tun_IF -j MASQUERADE
+    apt-get install iptables-persistent -y #保存规则，重启后能生效
+    netfilter-persistent save
+
+    # 6. 启动服务
     systemctl daemon-reload
     systemctl enable easytier
     systemctl restart easytier
-    echo "EasyTier服务已安装并启动！"
-    echo "设置iptables转发规则！tun0和eth0"
-  # 6. 增加做为网关时的转发规则
-  export tun_IF=tun0  && export WAN_IF=eth0  #设置物理网卡和虚拟网卡的接口
-   #其中的 tun0 在不同的机器中不一样，你可以在路由器ssh环境中用 ip addr
-  iptables -I FORWARD -i $WAN_IF -j ACCEPT
-  iptables -I FORWARD -o  $WAN_IF -j ACCEPT
-  iptables -t nat -I POSTROUTING -o  $WAN_IF -j MASQUERADE
-  iptables -I FORWARD -i $tun_IF -j ACCEPT
-  iptables -I FORWARD -o $tun_IF -j ACCEPT
-  iptables -t nat -I POSTROUTING -o $tun_IF -j MASQUERADE
-  apt-get install iptables-persistent -y #保存规则，重启后能生效
-  netfilter-persistent save
-  echo "显示运行日志中，请按ctrl+c 取消输出"  
-  journalctl -f -u easytier.service
+    echo "EasyTier服务已安装并启动。查看日志:"
+    journalctl -f -u easytier.service
 }
 
 # 修改配置流程
 modify_config() {
     # 1. 更新主机名
     #hostnamectl set-hostname "$HOSTNAME"
-  #--machine-id $HOSTNAME
+    #--machine-id $HOSTNAME
+
     # 2. 更新服务文件
     service_content="[Unit]
 Description=EasyTier Service
@@ -185,7 +195,7 @@ After=network.target syslog.target
 Wants=network.target
 [Service]
 Type=simple
-ExecStart=/root/easytier/easytier-core -w $USERNAME --hostname $HOSTNAME 
+ExecStart=/root/easytier/easytier-core -w $USERNAME --hostname $HOSTNAME
 Restart=always
 RestartSec=5
 LimitNOFILE=1048576
@@ -213,9 +223,10 @@ uninstall_service() {
     # 2. 删除服务文件
     rm -f /etc/systemd/system/easytier.service
 
-    # 3. 删除安装文件
+    # 3. 删除安装文件和缓存文件
     rm -rf /root/easytier
     rm -f /root/easytier.sh # Assuming the script itself is named easytier.sh
+    rm -f /tmp/easytier.zip # 同时删除缓存文件
     echo "EasyTier服务已卸载，相关文件已删除"
 }
 
@@ -230,10 +241,13 @@ update_service() {
     # 3. 新建文件夹路径为 /root/easytier
     mkdir -p /root/easytier
 
-    # 4. 根据架构下载并解压新的程序文件
+    # 4. 删除缓存文件以确保下载最新版本
+    rm -f /tmp/easytier.zip
+
+    # 5. 根据架构下载并解压新的程序文件
     download_and_extract "$ARCH"
 
-    # 5. 重新启动服务
+    # 6. 重新启动服务
     systemctl daemon-reload
     systemctl enable easytier
     systemctl restart easytier
