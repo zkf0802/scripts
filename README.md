@@ -1,4 +1,4 @@
-1、 wget -P /root/ https://ghfast.top/https://github.com/zkf0802/scripts/blob/main/二改easytier.sh && chmod 777 /root/easytier.sh
+1、 wget -P /root/ https://ghfast.top/https://github.com/zkf0802/scripts/blob/main/easytier.sh && chmod 777 /root/easytier.sh
 2、/root/easytier.sh install guoke0802 jingdong
 
 # easytier.sh 一键安装脚本使用说明
